@@ -1,0 +1,29 @@
+[project]
+name = "progression-service"
+version = "0.1.0"
+description = "Servicio FastAPI autónomo de progresión (Statistics, Ranks, Achievements, Ranking) de Fijazo"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi (>=0.139.0,<0.140.0)",
+    "uvicorn[standard] (>=0.51.0,<0.52.0)",
+    "pymongo (>=4.9,<5.0)",
+    "pydantic-settings (>=2.7.0,<3.0.0)",
+]
+
+[tool.poetry]
+packages = [{include = "progression_service", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "pytest-asyncio (>=1.0.0,<2.0.0)",
+    "httpx (>=0.28.1,<0.29.0)",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
