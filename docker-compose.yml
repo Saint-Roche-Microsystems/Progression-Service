@@ -1,0 +1,18 @@
+# Compose de desarrollo del progression-service: solo levanta su Mongo propio para poder
+# trabajar el servicio sin depender del resto del sistema.
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27022:27017"
+    volumes:
+      - progression_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  progression_mongo_data:
