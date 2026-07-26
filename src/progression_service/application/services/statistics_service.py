@@ -25,12 +25,18 @@ class StatisticsService:
         self._users = user_repository
 
     async def recalculate(self, user_id: str) -> UserStatistics:
-        """Recalcula las estadísticas del usuario desde sus apuestas y las persiste."""
+        """Recalcula las estadísticas del usuario desde sus apuestas y las persiste.
+
+        Las apuestas se leen de bets-service (su dueño). Si esa lectura falla, el puerto
+        lanza ``BetSourceUnavailableError`` y el ``upsert`` de abajo no llega a ejecutarse:
+        es intencionado, porque persistir el resultado de un historial vacío borraría las
+        estadísticas buenas del usuario.
+        """
 
         user = await self._users.get_by_id(user_id)
         username = user.username if user else ""
 
-        bets, _ = await self._bets.list_by_user(user_id, skip=0, limit=1_000_000)
+        bets = await self._bets.list_all_by_user(user_id)
         stats = compute_statistics(user_id, bets, username=username)
         stats.ranking_score = compute_ranking_score(stats)
 

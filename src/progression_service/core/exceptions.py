@@ -42,3 +42,13 @@ class InvalidImportFileError(DomainError):
 
 class InvalidBetError(DomainError):
     """La apuesta viola una regla de negocio (p. ej. SIMPLE/PARLAY vs legs). -> 400."""
+
+
+class BetSourceUnavailableError(DomainError):
+    """No se pudieron leer las apuestas desde bets-service. -> 503.
+
+    **Fail-closed deliberado**, al contrario que el resto de dependencias de este sistema:
+    el recálculo hace ``upsert`` de lo que reciba, así que tratar un fallo de red como "el
+    usuario no tiene apuestas" sobrescribiría sus estadísticas reales con ceros. Es
+    preferible no recalcular y devolver 503.
+    """

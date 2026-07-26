@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     # CORS: orígenes autorizados del frontend, separados por comas.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # bets-service es el dueño de las apuestas: este servicio las LEE por HTTP interno
+    # (`GET /internal/bets`), nunca desde Mongo — su base no contiene la colección `bets`.
+    # El secreto que autentica esa llamada saliente es el mismo `internal_api_key` de abajo:
+    # todo el sistema comparte un único secreto de servicio.
+    bets_service_url: str = "http://localhost:8002"
+    bets_service_timeout_seconds: float = 10.0
+    # Tamaño de página al recorrer el historial de un usuario. El tope que acepta
+    # bets-service es 500.
+    bets_page_size: int = 200
+
     # Secreto de servicio a servicio. Protege todas las rutas internas; sin valor, el
     # servicio se niega a arrancar (mismo criterio que auth-service/bets-service).
     internal_api_key: str = ""

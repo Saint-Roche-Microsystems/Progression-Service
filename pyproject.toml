@@ -9,6 +9,7 @@ dependencies = [
     "pymongo (>=4.9,<5.0)",
     "pydantic-settings (>=2.7.0,<3.0.0)",
     "sentry-sdk (>=2.19.0,<3.0.0)",
+    "httpx (>=0.28.1,<0.29.0)",
 ]
 
 [tool.poetry]
@@ -22,7 +23,6 @@ build-backend = "poetry.core.masonry.api"
 dev = [
     "pytest (>=9.1.1,<10.0.0)",
     "pytest-asyncio (>=1.0.0,<2.0.0)",
-    "httpx (>=0.28.1,<0.29.0)",
 ]
 
 [tool.pytest.ini_options]

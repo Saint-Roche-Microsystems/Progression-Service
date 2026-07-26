@@ -34,3 +34,16 @@ async def test_achievements_catalog():
         r = await c.get("/achievements")
         assert r.status_code == 200
         assert len(r.json()) == len(CATALOG)
+
+
+async def test_internal_recalculate_requires_the_service_secret():
+    """Dispara trabajo de recálculo: no puede quedar abierta a quien alcance el puerto."""
+
+    async with await _client() as c:
+        sin_clave = await c.post("/internal/recalculate/u1")
+        clave_mala = await c.post(
+            "/internal/recalculate/u1", headers={"X-Internal-Key": "clave-incorrecta"}
+        )
+
+    assert sin_clave.status_code == 401
+    assert clave_mala.status_code == 401

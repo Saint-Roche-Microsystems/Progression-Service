@@ -40,12 +40,12 @@ def get_database(client: AsyncMongoClient, db_name: str) -> AsyncDatabase:
 async def ensure_indexes(db: AsyncDatabase) -> None:
     """Crea los índices de las colecciones que usa este servicio (idempotente).
 
-    - ``bets.user_id`` para acelerar el recálculo por usuario (proyección de apuestas).
     - ``user_statistics.user_id`` único y ``ranking_score`` (desc) para el ranking.
     - ``user_progression.user_id`` único.
+
+    No hay índice de ``bets``: las apuestas no se guardan aquí, se leen de bets-service.
     """
 
-    await db["bets"].create_index("user_id")
     await db["user_statistics"].create_index("user_id", unique=True)
     await db["user_statistics"].create_index([("ranking_score", -1)])
     await db["user_progression"].create_index("user_id", unique=True)
