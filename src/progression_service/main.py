@@ -8,6 +8,7 @@ abre la conexión y asegura los índices.
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,8 +24,10 @@ from progression_service.api.routers import (
 from progression_service.core.config import get_settings
 from progression_service.core.exceptions import (
     AlreadyExistsError,
+    BetSourceUnavailableError,
     DomainError,
     ForbiddenError,
+    InvalidCredentialsError,
     NotFoundError,
 )
 from progression_service.core.logging import (
@@ -58,9 +61,20 @@ async def lifespan(app: FastAPI):
     await ensure_indexes(db)
     app.state.mongo_client = client
     app.state.db = db
+
+    # Cliente compartido hacia bets-service, dueño de las apuestas. Construirlo no abre
+    # ninguna conexión, así que este servicio arranca aunque bets-service esté caído: el
+    # fallo aparece por petición como 503, no en el arranque.
+    app.state.bets_client = httpx.AsyncClient(
+        base_url=settings.bets_service_url,
+        timeout=httpx.Timeout(settings.bets_service_timeout_seconds),
+        headers={"X-Internal-Key": settings.internal_api_key},
+    )
+
     try:
         yield
     finally:
+        await app.state.bets_client.aclose()
         await client.close()
 
 
@@ -153,6 +167,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
         NotFoundError: 404,
         AlreadyExistsError: 409,
         ForbiddenError: 403,
+        InvalidCredentialsError: 401,
+        BetSourceUnavailableError: 503,
     }
 
     async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
