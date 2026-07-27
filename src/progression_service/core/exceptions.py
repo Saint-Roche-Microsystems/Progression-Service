@@ -36,12 +36,30 @@ class AccountLockedError(DomainError):
         self.retry_after = retry_after
 
 
+class InvalidArgumentError(DomainError):
+    """El argumento recibido no tiene una forma válida (id vacío o mal formado). -> 400.
+
+    Es la traducción del código ``INVALID_ARGUMENT`` del contrato TCP ``users.profile``:
+    el error es de quien pregunta, no del recurso, así que no puede ser un 404 ni un 500.
+    """
+
+
 class InvalidImportFileError(DomainError):
     """El archivo de importación es inválido (no es .xlsx o faltan columnas). -> 400."""
 
 
 class InvalidBetError(DomainError):
     """La apuesta viola una regla de negocio (p. ej. SIMPLE/PARLAY vs legs). -> 400."""
+
+
+class UserProfileUnavailableError(DomainError):
+    """No se pudo resolver el perfil del usuario contra users-service. -> 503.
+
+    Mismo criterio que :class:`BetSourceUnavailableError`: el recálculo hace ``upsert`` de
+    lo que calcule, así que continuar con un ``username`` vacío porque el transporte falló
+    borraría el nombre bueno de la proyección. Es preferible no recalcular y devolver 503,
+    que es además un código que el cliente puede reintentar.
+    """
 
 
 class BetSourceUnavailableError(DomainError):

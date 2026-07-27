@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     # bets-service es 500.
     bets_page_size: int = 200
 
+    # users-service es el dueño de la identidad: el perfil (username, fecha de alta) se
+    # resuelve por TCP con el contrato `users.profile`, nunca desde la Mongo de este
+    # servicio, cuya colección `users` es un resto del monolito y está vacía.
+    # Con el host vacío se cae al proveedor local de desarrollo (ver
+    # infrastructure/repositories/mongo_user_profile_provider.py); no debe desplegarse así.
+    users_service_tcp_host: str | None = None
+    # 3011 es el puerto del transporte TCP de users-service (su TCP_PORT).
+    users_service_tcp_port: int = 3011
+    users_service_timeout_seconds: float = 5.0
+
     # RabbitMQ: consumer de la cola `progression.recalc` (T-026), alimentada por el
     # exchange `bets.events` que publica bets-service. La topología la declara la
     # infraestructura (T-025, ver rabbitmq/definitions.json); este servicio sólo consume.

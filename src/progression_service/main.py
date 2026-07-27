@@ -32,8 +32,10 @@ from progression_service.core.exceptions import (
     BetSourceUnavailableError,
     DomainError,
     ForbiddenError,
+    InvalidArgumentError,
     InvalidCredentialsError,
     NotFoundError,
+    UserProfileUnavailableError,
 )
 from progression_service.core.logging import (
     Timer,
@@ -204,6 +206,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
         ForbiddenError: 403,
         InvalidCredentialsError: 401,
         BetSourceUnavailableError: 503,
+        UserProfileUnavailableError: 503,
+        InvalidArgumentError: 400,
     }
 
     async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
