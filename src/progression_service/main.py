@@ -1,19 +1,24 @@
 """App factory del progression-service.
 
 Servicio FastAPI autónomo dueño de Statistics, Ranks, Achievements y Ranking, sobre su
-propia base de datos. El arranque **no** ejecuta ningún recálculo masivo (ver T-029): sólo
-abre la conexión y asegura los índices.
+propia base de datos. El arranque **no** ejecuta ningún recálculo masivo (ver T-029): abre
+la conexión, asegura los índices y levanta el consumer de RabbitMQ (T-026), que recalcula
+por usuario a medida que llegan los eventos de apuesta.
 """
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
+import aio_pika
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from progression_service.api.deps import build_progression_service
 from progression_service.api.routers import (
     achievements,
     internal,
@@ -43,6 +48,9 @@ from progression_service.infrastructure.database.mongo import (
     ensure_indexes,
     get_database,
 )
+from progression_service.infrastructure.events.rabbitmq_consumer import (
+    ProgressionRecalcConsumer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +79,36 @@ async def lifespan(app: FastAPI):
         headers={"X-Internal-Key": settings.internal_api_key},
     )
 
+    # Consumer de `progression.recalc` (T-026): cierra el circuito asíncrono que abre
+    # bets-service al publicar en `bets.events`. Sin URL configurada el servicio arranca
+    # sin consumer y el recálculo sigue siendo manual por `POST /internal/recalculate`.
+    rabbit_connection = None
+    consumer_task = None
+    if settings.rabbitmq_url:
+        rabbit_connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+        channel = await rabbit_connection.channel()
+        await channel.set_qos(prefetch_count=settings.rabbitmq_prefetch_count)
+        # get_queue, no declare_queue: la topología es de la infraestructura (T-025).
+        queue = await channel.get_queue(settings.progression_recalc_queue)
+        consumer = ProgressionRecalcConsumer(
+            queue,
+            lambda: build_progression_service(db, app.state.bets_client),
+            cooldown_seconds=settings.rabbitmq_retry_cooldown_seconds,
+        )
+        consumer_task = asyncio.create_task(
+            consumer.run(), name="progression-recalc-consumer"
+        )
+
     try:
         yield
     finally:
+        # El consumer usa la base y el cliente HTTP: se para antes de cerrarlos.
+        if consumer_task is not None:
+            consumer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await consumer_task
+        if rabbit_connection is not None:
+            await rabbit_connection.close()
         await app.state.bets_client.aclose()
         await client.close()
 

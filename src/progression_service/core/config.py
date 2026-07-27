@@ -37,6 +37,20 @@ class Settings(BaseSettings):
     # bets-service es 500.
     bets_page_size: int = 200
 
+    # RabbitMQ: consumer de la cola `progression.recalc` (T-026), alimentada por el
+    # exchange `bets.events` que publica bets-service. La topología la declara la
+    # infraestructura (T-025, ver rabbitmq/definitions.json); este servicio sólo consume.
+    # Con la URL vacía el servicio arranca SIN consumer: sirve para desarrollo local sin
+    # broker, pero no debe desplegarse así (el recálculo quedaría manual).
+    rabbitmq_url: str | None = None
+    progression_recalc_queue: str = "progression.recalc"
+    # prefetch=1: un mensaje en vuelo por consumer, para que el enfriamiento de abajo
+    # frene de verdad la redelivery en vez de acumular mensajes ya entregados.
+    rabbitmq_prefetch_count: int = 1
+    # Pausa tras devolver a la cola un mensaje que falló porque bets-service no responde.
+    # Sin ella, el requeue inmediato genera un bucle cerrado de reintentos.
+    rabbitmq_retry_cooldown_seconds: float = 5.0
+
     # Secreto de servicio a servicio. Protege todas las rutas internas; sin valor, el
     # servicio se niega a arrancar (mismo criterio que auth-service/bets-service).
     internal_api_key: str = ""

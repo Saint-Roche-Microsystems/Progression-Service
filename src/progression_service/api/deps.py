@@ -105,3 +105,23 @@ def get_progression_service(
 
 def get_ranking_service(db: DbDep) -> RankingService:
     return RankingService(MongoStatisticsRepository(db))
+
+
+def build_progression_service(
+    db: AsyncDatabase, bets_client: httpx.AsyncClient
+) -> ProgressionService:
+    """Construye el servicio fuera del scope de una petición HTTP.
+
+    El consumer de RabbitMQ (T-026) no pasa por el sistema de ``Depends`` de FastAPI, pero
+    necesita exactamente el mismo grafo de objetos que :func:`get_progression_service`. Se
+    le pasan la base y el cliente HTTP que crea el lifespan, que son seguros de compartir
+    entre tareas concurrentes.
+    """
+
+    bets = HttpBetRepository(bets_client, page_size=get_settings().bets_page_size)
+    return ProgressionService(
+        StatisticsService(bets, MongoStatisticsRepository(db), MongoUserRepository(db)),
+        MongoProgressionRepository(db),
+        MongoUserRepository(db),
+        bets,
+    )

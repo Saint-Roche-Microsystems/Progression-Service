@@ -19,8 +19,37 @@ rangos, desbloqueo de logros, cómputo de ranking) sobre su **propia base de dat
 | POST   | `/internal/recalculate/{user_id}` | Recálculo stats→ranks→logros→ranking    |
 | GET    | `/health`                   | Healthcheck                                   |
 
-El arranque **no** ejecuta ningún recálculo masivo (ver T-029): sólo abre la conexión y
-asegura los índices. La carga inicial se hace vía el flujo de eventos / script manual.
+El arranque **no** ejecuta ningún recálculo masivo (ver T-029): abre la conexión, asegura
+los índices y levanta el consumer de RabbitMQ. La carga inicial se hace con
+`scripts/backfill_progression.py`, que publica un evento histórico por usuario.
+
+## Consumer de eventos (`progression.recalc`)
+
+El recálculo normal **no se dispara por HTTP**: llega por RabbitMQ. bets-service publica
+cada mutación de apuesta en el exchange `bets.events`, y el binding `bet.#` la deposita en
+la cola `progression.recalc`, que este servicio consume desde su lifespan. El endpoint
+`POST /internal/recalculate/{user_id}` queda como disparo manual/de emergencia.
+
+La topología (exchange, cola, binding) la declara la infraestructura en
+`rabbitmq/definitions.json`: el servicio la busca con `get_queue`, nunca la declara.
+
+Política de confirmación, en `infrastructure/events/rabbitmq_consumer.py`:
+
+| Situación | Qué hace | Por qué |
+| --- | --- | --- |
+| Mensaje ilegible o `event_type` desconocido | `ack` (se descarta) | Reintentarlo nunca funcionaría y, sin dead-letter queue, dejarlo pendiente bloquearía la cola |
+| bets-service no responde (`BetSourceUnavailableError`) | `nack` con requeue + pausa | Fallo transitorio. Descartarlo dejaría la proyección obsoleta para siempre; la pausa evita que el requeue se vuelva un bucle cerrado |
+| Cualquier otro error | `nack` sin requeue | Queda en Sentry y en el log; lo repara el siguiente evento del usuario o el backfill |
+
+Con `RABBITMQ_URL` vacío el servicio arranca **sin** consumer: útil para desarrollo local
+sin broker, pero entonces el recálculo vuelve a ser manual.
+
+| Variable | Por defecto | Para qué |
+| --- | --- | --- |
+| `RABBITMQ_URL` | *(vacío)* | Sin valor, no se levanta el consumer |
+| `PROGRESSION_RECALC_QUEUE` | `progression.recalc` | Cola que se consume |
+| `RABBITMQ_PREFETCH_COUNT` | `1` | Mensajes en vuelo por consumer |
+| `RABBITMQ_RETRY_COOLDOWN_SECONDS` | `5.0` | Pausa tras devolver un mensaje a la cola |
 
 ## De dónde salen las apuestas
 
@@ -32,8 +61,9 @@ recalcular, se leen por su API interna con el secreto de servicio compartido:
 | `GET /internal/bets?user_id=&page=&page_size=` | Historial completo de un usuario (se pagina hasta `total`) |
 | `GET /internal/bets/user-ids` | Usuarios con al menos una apuesta, para el recálculo masivo |
 
-El evento `bet.created` de RabbitMQ solo **avisa** de qué usuario cambió; el historial se
-relee aquí. Por eso reprocesar un evento repetido o antiguo da el mismo resultado.
+El evento de RabbitMQ solo **avisa** de qué usuario cambió; el historial se relee aquí. Por
+eso reprocesar un evento repetido o antiguo da el mismo resultado, y por eso el backfill
+puede publicar eventos con un `bet_id` centinela.
 
 **Fail-closed**, al contrario que el resto de dependencias del sistema: si bets-service no
 responde, el recálculo devuelve `503` y **no** persiste nada. Tratar el fallo como "este
