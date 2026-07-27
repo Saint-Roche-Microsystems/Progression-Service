@@ -14,7 +14,8 @@ from progression_service.domain.entities.bet import Bet, BetStatus, BetType
 from progression_service.domain.entities.statistics import UserStatistics
 from progression_service.domain.repositories.bet_repository import BetRepository
 from progression_service.domain.repositories.statistics_repository import StatisticsRepository
-from progression_service.domain.repositories.user_repository import UserRepository
+from progression_service.domain.entities.user_profile import UserProfile
+from progression_service.domain.repositories.user_profile_provider import UserProfileProvider
 from tests.conftest import USER_ID, utc
 
 
@@ -66,37 +67,16 @@ class _RecordingStats(StatisticsRepository):
         return None
 
 
-class _NoUsers(UserRepository):
-    """El perfil vive en users-service; aquí siempre falta y el cálculo lo tolera."""
+class _KnownUser(UserProfileProvider):
+    """El perfil vive en users-service y llega por el contrato TCP `users.profile`."""
 
-    async def create(self, user):  # pragma: no cover - sin llamadores
-        raise NotImplementedError
-
-    async def get_by_id(self, user_id: str):
-        return None
-
-    async def get_by_email(self, email: str):  # pragma: no cover - sin llamadores
-        return None
-
-    async def get_by_username(self, username: str):  # pragma: no cover - sin llamadores
-        return None
-
-    async def list(self, *args, **kwargs):  # pragma: no cover - sin llamadores
-        return [], 0
-
-    async def set_active(self, user_id: str, active: bool):  # pragma: no cover
-        raise NotImplementedError
-
-    async def record_login_failure(self, *args, **kwargs):  # pragma: no cover
-        raise NotImplementedError
-
-    async def reset_login_failures(self, user_id: str):  # pragma: no cover
-        raise NotImplementedError
+    async def get_profile(self, user_id: str) -> UserProfile:
+        return UserProfile(id=user_id, username="olivier", created_at=utc(2026, 1, 15))
 
 
 async def test_recalculate_does_not_persist_when_bets_are_unreachable():
     stats = _RecordingStats()
-    service = StatisticsService(_UnavailableBets(), stats, _NoUsers())
+    service = StatisticsService(_UnavailableBets(), stats, _KnownUser())
 
     with pytest.raises(BetSourceUnavailableError):
         await service.recalculate(USER_ID)
@@ -108,7 +88,7 @@ async def test_recalculate_persists_when_bets_are_readable():
     """Contraprueba: con la fuente disponible sí se materializa el resultado."""
 
     stats = _RecordingStats()
-    service = StatisticsService(_OneBet(), stats, _NoUsers())
+    service = StatisticsService(_OneBet(), stats, _KnownUser())
 
     result = await service.recalculate(USER_ID)
 
