@@ -13,6 +13,7 @@ que el servicio dueño no responde (503).
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 from datetime import datetime
@@ -76,6 +77,8 @@ class TcpUserProfileClient(UserProfileProvider):
         reader, writer = await asyncio.open_connection(self._host, self._port)
         try:
             payload = {"pattern": self.PATTERN, "id": "1", "data": data}
+            # La petición sólo lleva identificadores ASCII, así que aquí bytes y unidades
+            # UTF-16 coinciden; ver _read_frame para el caso contrario.
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             writer.write(f"{len(body)}#".encode("utf-8") + body)
             await writer.drain()
@@ -128,11 +131,30 @@ class TcpUserProfileClient(UserProfileProvider):
 
     @staticmethod
     async def _read_frame(reader: asyncio.StreamReader) -> dict[str, object]:
-        # Prefijo de longitud hasta el separador '#'.
-        length_bytes = await reader.readuntil(b"#")
-        length = int(length_bytes[:-1])
-        body = await reader.readexactly(length)
-        return json.loads(body.decode("utf-8"))
+        """Lee un frame ``<longitud>#<json>`` del transporte TCP de Nest.
+
+        Ojo con la longitud: Nest la calcula con ``messageData.length``
+        (``@nestjs/microservices/helpers/json-socket.js:61``), que en JavaScript son
+        **unidades UTF-16**, no bytes. Con un mensaje ASCII da lo mismo, pero en cuanto el
+        contrato devuelve texto acentuado —y los mensajes de error de este repositorio
+        están en español— leer esa cifra como bytes corta el JSON a media palabra. Por eso
+        se leen bytes hasta completar el número de unidades UTF-16 anunciado.
+        """
+
+        length = int((await reader.readuntil(b"#"))[:-1])
+
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        text = decoder.decode(await reader.readexactly(length))
+        while _utf16_units(text) < length:
+            text += decoder.decode(await reader.readexactly(1))
+
+        return json.loads(text)
+
+
+def _utf16_units(text: str) -> int:
+    """Longitud del texto tal y como la cuenta JavaScript (unidades UTF-16)."""
+
+    return sum(2 if ord(char) > 0xFFFF else 1 for char in text)
 
 
 def _parse_datetime(value: object) -> datetime | None:

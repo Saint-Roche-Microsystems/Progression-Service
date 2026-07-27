@@ -27,8 +27,17 @@ USER_ID = "6a60c83b2a0af5b4ab9745cf"
 
 
 def _encode(payload: dict) -> bytes:
-    body = json.dumps(payload, separators=(",", ":")).encode()
-    return f"{len(body)}#".encode() + body
+    """Codifica un frame como lo hace Nest: la longitud son unidades UTF-16, no bytes.
+
+    Es la parte del framing que más fácil se lee mal (`json-socket.js:61` usa
+    `messageData.length`, que en JavaScript cuenta unidades UTF-16). Los mensajes de error
+    de este sistema están en español, así que la diferencia aparece en cuanto hay una
+    tilde.
+    """
+
+    text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    units = sum(2 if ord(c) > 0xFFFF else 1 for c in text)
+    return f"{units}#".encode() + text.encode()
 
 
 async def _read_frame(reader: asyncio.StreamReader) -> dict:
@@ -158,3 +167,38 @@ async def test_timeout_becomes_unavailable():
         client = TcpUserProfileClient("127.0.0.1", port, timeout_seconds=0.2)
         with pytest.raises(UserProfileUnavailableError):
             await client.get_profile(USER_ID)
+
+
+async def test_reads_a_frame_whose_message_has_accents():
+    """Regresión: la longitud del frame de Nest va en unidades UTF-16, no en bytes.
+
+    Leyéndola como bytes, un `err` con tildes —"user_id ausente o con formato inválido."—
+    llega truncado, el JSON no parsea y un 400 se degrada a 503. Se detectó levantando el
+    sistema en Docker, no en los tests: con mensajes ASCII las dos cuentas coinciden.
+    """
+
+    server, port = await _serve(
+        _responder(
+            {
+                "err": {
+                    "code": "INVALID_ARGUMENT",
+                    "message": "user_id ausente o con formato inválido.",
+                }
+            }
+        )
+    )
+    async with server:
+        client = TcpUserProfileClient("127.0.0.1", port, timeout_seconds=5.0)
+        with pytest.raises(InvalidArgumentError):
+            await client.get_profile("no-es-un-objectid")
+
+
+async def test_reads_a_profile_whose_username_has_accents():
+    server, port = await _serve(
+        _responder({"response": {"id": USER_ID, "username": "Olivier Paspuél ñ"}})
+    )
+    async with server:
+        client = TcpUserProfileClient("127.0.0.1", port, timeout_seconds=5.0)
+        profile = await client.get_profile(USER_ID)
+
+    assert profile.username == "Olivier Paspuél ñ"
