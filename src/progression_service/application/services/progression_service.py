@@ -5,16 +5,20 @@ logros. Implementa el puerto ``StatisticsSynchronizer``, por lo que puede
 inyectarse en ``BetService`` para mantener todo sincronizado tras cada apuesta.
 """
 
+import logging
 from datetime import datetime, timezone
 
 from progression_service.application.services.statistics_service import StatisticsService
+from progression_service.core.exceptions import NotFoundError
 from progression_service.domain.entities.progression import UserProgression
 from progression_service.domain.entities.statistics import UserStatistics
 from progression_service.domain.repositories.bet_repository import BetRepository
 from progression_service.domain.repositories.progression_repository import ProgressionRepository
-from progression_service.domain.repositories.user_repository import UserRepository
+from progression_service.domain.repositories.user_profile_provider import UserProfileProvider
 from progression_service.domain.services import achievement_evaluator, rank_evaluator
 from progression_service.domain.services.rank_scorer import compute_rank_score
+
+logger = logging.getLogger(__name__)
 
 
 class ProgressionService:
@@ -24,12 +28,12 @@ class ProgressionService:
         self,
         statistics_service: StatisticsService,
         progression_repository: ProgressionRepository,
-        user_repository: UserRepository,
+        user_profiles: UserProfileProvider,
         bet_repository: BetRepository,
     ) -> None:
         self._stats_service = statistics_service
         self._progression = progression_repository
-        self._users = user_repository
+        self._users = user_profiles
         self._bets = bet_repository
 
     async def recalculate(self, user_id: str) -> UserProgression:
@@ -48,17 +52,33 @@ class ProgressionService:
         return await self._evaluate(user_id, stats)
 
     async def recalculate_all(self) -> int:
-        """Recalcula stats + progresión de todos los usuarios con apuestas."""
+        """Recalcula stats + progresión de todos los usuarios con apuestas.
+
+        Igual que en :meth:`StatisticsService.recalculate_all`, un usuario del historial
+        que ya no tiene perfil en users-service se omite en vez de abortar el backfill.
+        """
 
         user_ids = await self._bets.distinct_user_ids()
+        processed = 0
         for user_id in user_ids:
-            await self.recalculate(user_id)
-        return len(user_ids)
+            try:
+                await self.recalculate(user_id)
+            except NotFoundError:
+                logger.warning(
+                    "Backfill: usuario sin perfil en users-service, se omite.",
+                    extra={"user_id": user_id},
+                )
+                continue
+            processed += 1
+        return processed
 
     async def _evaluate(self, user_id: str, stats: UserStatistics) -> UserProgression:
         now = datetime.now(timezone.utc)
-        user = await self._users.get_by_id(user_id)
-        account_age_days = (now - user.created_at).days if user else 0
+        # La antigüedad de la cuenta puntúa en el rango y en los logros, y la fecha de alta
+        # la tiene users-service, no este servicio: llega por el contrato `users.profile`.
+        profile = await self._users.get_profile(user_id)
+        created_at = profile.created_at
+        account_age_days = (now - created_at).days if created_at else 0
 
         progression = await self._progression.get_by_user_id(user_id) or UserProgression(
             user_id=user_id

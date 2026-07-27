@@ -1,11 +1,16 @@
 """Casos de uso de estadísticas: cálculo, materialización y sincronización."""
 
+import logging
+
+from progression_service.core.exceptions import NotFoundError
 from progression_service.domain.entities.statistics import UserStatistics
 from progression_service.domain.repositories.bet_repository import BetRepository
 from progression_service.domain.repositories.statistics_repository import StatisticsRepository
-from progression_service.domain.repositories.user_repository import UserRepository
+from progression_service.domain.repositories.user_profile_provider import UserProfileProvider
 from progression_service.domain.services.ranking_scorer import compute_ranking_score
 from progression_service.domain.services.statistics_calculator import compute_statistics
+
+logger = logging.getLogger(__name__)
 
 
 class StatisticsService:
@@ -18,11 +23,11 @@ class StatisticsService:
         self,
         bet_repository: BetRepository,
         statistics_repository: StatisticsRepository,
-        user_repository: UserRepository,
+        user_profiles: UserProfileProvider,
     ) -> None:
         self._bets = bet_repository
         self._stats = statistics_repository
-        self._users = user_repository
+        self._users = user_profiles
 
     async def recalculate(self, user_id: str) -> UserStatistics:
         """Recalcula las estadísticas del usuario desde sus apuestas y las persiste.
@@ -31,10 +36,14 @@ class StatisticsService:
         lanza ``BetSourceUnavailableError`` y el ``upsert`` de abajo no llega a ejecutarse:
         es intencionado, porque persistir el resultado de un historial vacío borraría las
         estadísticas buenas del usuario.
+
+        El perfil se resuelve contra users-service (contrato TCP ``users.profile``), que es
+        su dueño. Si el usuario no existe, el error sube: recalcular la proyección de un
+        usuario que no existe sólo puede crear una fila fantasma en el ranking.
         """
 
-        user = await self._users.get_by_id(user_id)
-        username = user.username if user else ""
+        profile = await self._users.get_profile(user_id)
+        username = profile.username
 
         bets = await self._bets.list_all_by_user(user_id)
         stats = compute_statistics(user_id, bets, username=username)
@@ -55,9 +64,22 @@ class StatisticsService:
         """Recalcula las estadísticas de todos los usuarios con apuestas (backfill).
 
         Devuelve el número de usuarios procesados. Es idempotente.
+
+        Un usuario del historial de apuestas que ya no existe en users-service (cuenta
+        borrada) se salta con un log en vez de abortar el backfill entero: aquí no hay
+        nadie a quien devolverle un 404, y el resto de usuarios sí se puede recalcular.
         """
 
         user_ids = await self._bets.distinct_user_ids()
+        processed = 0
         for user_id in user_ids:
-            await self.recalculate(user_id)
-        return len(user_ids)
+            try:
+                await self.recalculate(user_id)
+            except NotFoundError:
+                logger.warning(
+                    "Backfill: usuario sin perfil en users-service, se omite.",
+                    extra={"user_id": user_id},
+                )
+                continue
+            processed += 1
+        return processed

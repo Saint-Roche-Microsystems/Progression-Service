@@ -21,6 +21,7 @@ from progression_service.core.exceptions import (
     InvalidCredentialsError,
 )
 from progression_service.domain.repositories.bet_repository import BetRepository
+from progression_service.domain.repositories.user_profile_provider import UserProfileProvider
 from progression_service.infrastructure.http.http_bet_repository import HttpBetRepository
 from progression_service.infrastructure.repositories.mongo_progression_repository import (
     MongoProgressionRepository,
@@ -28,8 +29,14 @@ from progression_service.infrastructure.repositories.mongo_progression_repositor
 from progression_service.infrastructure.repositories.mongo_statistics_repository import (
     MongoStatisticsRepository,
 )
+from progression_service.infrastructure.repositories.mongo_user_profile_provider import (
+    MongoUserProfileProvider,
+)
 from progression_service.infrastructure.repositories.mongo_user_repository import (
     MongoUserRepository,
+)
+from progression_service.infrastructure.tcp.users_profile_client import (
+    TcpUserProfileClient,
 )
 
 
@@ -79,17 +86,45 @@ def get_bet_repository(
 BetRepoDep = Annotated[BetRepository, Depends(get_bet_repository)]
 
 
-def get_statistics_service(db: DbDep, bets: BetRepoDep) -> StatisticsService:
+def build_user_profile_provider(db: AsyncDatabase) -> UserProfileProvider:
+    """Proveedor del perfil de usuario: TCP contra users-service, su dueño.
+
+    Sin `USERS_SERVICE_TCP_HOST` configurado se cae al proveedor local sobre la Mongo de
+    este servicio, igual que bets-service cae a su validador permisivo: sirve para levantar
+    el servicio en desarrollo sin users-service delante, no para desplegar.
+    """
+
+    settings = get_settings()
+    if not settings.users_service_tcp_host:
+        return MongoUserProfileProvider(MongoUserRepository(db))
+    return TcpUserProfileClient(
+        settings.users_service_tcp_host,
+        settings.users_service_tcp_port,
+        settings.users_service_timeout_seconds,
+    )
+
+
+def get_user_profile_provider(db: DbDep) -> UserProfileProvider:
+    return build_user_profile_provider(db)
+
+
+UserProfileDep = Annotated[UserProfileProvider, Depends(get_user_profile_provider)]
+
+
+def get_statistics_service(
+    db: DbDep, bets: BetRepoDep, profiles: UserProfileDep
+) -> StatisticsService:
     return StatisticsService(
         bets,
         MongoStatisticsRepository(db),
-        MongoUserRepository(db),
+        profiles,
     )
 
 
 def get_progression_service(
     db: DbDep,
     bets: BetRepoDep,
+    profiles: UserProfileDep,
     statistics: Annotated[StatisticsService, Depends(get_statistics_service)],
 ) -> ProgressionService:
     # `statistics` se pide por Depends (en vez de construirlo aquí) para que FastAPI
@@ -98,7 +133,7 @@ def get_progression_service(
     return ProgressionService(
         statistics,
         MongoProgressionRepository(db),
-        MongoUserRepository(db),
+        profiles,
         bets,
     )
 
@@ -119,9 +154,10 @@ def build_progression_service(
     """
 
     bets = HttpBetRepository(bets_client, page_size=get_settings().bets_page_size)
+    profiles = build_user_profile_provider(db)
     return ProgressionService(
-        StatisticsService(bets, MongoStatisticsRepository(db), MongoUserRepository(db)),
+        StatisticsService(bets, MongoStatisticsRepository(db), profiles),
         MongoProgressionRepository(db),
-        MongoUserRepository(db),
+        profiles,
         bets,
     )
