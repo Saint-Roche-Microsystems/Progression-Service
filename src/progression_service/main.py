@@ -51,6 +51,9 @@ from progression_service.infrastructure.database.mongo import (
 from progression_service.infrastructure.events.rabbitmq_consumer import (
     ProgressionRecalcConsumer,
 )
+from progression_service.infrastructure.repositories.mongo_processed_event_repository import (
+    MongoProcessedEventRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,7 @@ async def lifespan(app: FastAPI):
         consumer = ProgressionRecalcConsumer(
             queue,
             lambda: build_progression_service(db, app.state.bets_client),
+            MongoProcessedEventRepository(db),
             cooldown_seconds=settings.rabbitmq_retry_cooldown_seconds,
         )
         consumer_task = asyncio.create_task(

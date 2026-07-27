@@ -47,6 +47,19 @@ def message_for(event_type: str = "bet.created", **overrides) -> FakeMessage:
     return FakeMessage(json.dumps(payload).encode("utf-8"))
 
 
+class FakeProcessedEventRepository:
+    """Doble en memoria de ``ProcessedEventRepository``: un set de claves ya vistas."""
+
+    def __init__(self) -> None:
+        self.seen: set[str] = set()
+
+    async def is_processed(self, event_key: str) -> bool:
+        return event_key in self.seen
+
+    async def mark_processed(self, event_key: str) -> None:
+        self.seen.add(event_key)
+
+
 class RecordingService:
     """Servicio de progresión que anota a quién se le pidió recalcular."""
 
@@ -65,9 +78,16 @@ class RecordingService:
         return None
 
 
-def consumer_for(service: RecordingService, cooldown: float = 0.0):
+def consumer_for(
+    service: RecordingService,
+    cooldown: float = 0.0,
+    processed_events: FakeProcessedEventRepository | None = None,
+):
     return ProgressionRecalcConsumer(
-        queue=None, service_factory=lambda: service, cooldown_seconds=cooldown
+        queue=None,
+        service_factory=lambda: service,
+        processed_events=processed_events or FakeProcessedEventRepository(),
+        cooldown_seconds=cooldown,
     )
 
 
@@ -183,3 +203,49 @@ async def test_event_without_request_id_still_gets_one():
     await consumer_for(service).handle(message_for(request_id=None))
 
     assert service.request_ids[0]
+
+
+async def test_duplicate_event_recalculates_only_once():
+    """Caso mínimo viable de la Actividad C: dos entregas del mismo evento, un solo efecto."""
+
+    service = RecordingService()
+    processed_events = FakeProcessedEventRepository()
+    consumer = consumer_for(service, processed_events=processed_events)
+
+    await consumer.handle(message_for())
+    second = message_for()
+    await consumer.handle(second)
+
+    assert service.recalculated == [USER_ID]
+    assert second.acked
+    assert second.nacked_requeue is None
+
+
+async def test_two_distinct_events_recalculate_twice():
+    service = RecordingService()
+    consumer = consumer_for(service, processed_events=FakeProcessedEventRepository())
+
+    await consumer.handle(message_for(bet_id="bet-1"))
+    await consumer.handle(message_for(bet_id="bet-2"))
+
+    assert service.recalculated == [USER_ID, USER_ID]
+
+
+async def test_message_without_bet_id_is_acked_and_never_recalculates():
+    service = RecordingService()
+    message = message_for(bet_id="")
+
+    await consumer_for(service).handle(message)
+
+    assert service.recalculated == []
+    assert message.acked
+
+
+async def test_message_without_occurred_at_is_acked_and_never_recalculates():
+    service = RecordingService()
+    message = message_for(occurred_at=None)
+
+    await consumer_for(service).handle(message)
+
+    assert service.recalculated == []
+    assert message.acked

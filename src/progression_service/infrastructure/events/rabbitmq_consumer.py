@@ -3,7 +3,9 @@
 Cierra el circuito asíncrono que abre bets-service: cada mutación de apuesta se publica en
 el exchange ``bets.events`` y llega aquí por el binding ``bet.#``. El evento sólo **avisa**
 de qué usuario cambió; el historial se relee de bets-service por HTTP, así que reprocesar
-un mensaje repetido o antiguo da el mismo resultado.
+un mensaje repetido no corrompe el estado (``recalculate`` hace ``upsert``), pero sí repite
+trabajo de sobra. RabbitMQ entrega "al menos una vez", así que antes de recalcular se
+consulta una clave de idempotencia y se descarta lo ya procesado (Actividad C, @RevillaA).
 
 La topología (exchange, cola, binding) la declara la infraestructura en
 ``rabbitmq/definitions.json``: este servicio la busca, nunca la declara.
@@ -30,6 +32,9 @@ from collections.abc import Callable
 from progression_service.application.services.progression_service import ProgressionService
 from progression_service.core.exceptions import BetSourceUnavailableError
 from progression_service.core.logging import new_request_id, set_request_id
+from progression_service.domain.repositories.processed_event_repository import (
+    ProcessedEventRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +53,13 @@ class ProgressionRecalcConsumer:
         self,
         queue,
         service_factory: Callable[[], ProgressionService],
+        processed_events: ProcessedEventRepository,
         *,
         cooldown_seconds: float = 5.0,
     ) -> None:
         self._queue = queue
         self._service_factory = service_factory
+        self._processed_events = processed_events
         self._cooldown_seconds = cooldown_seconds
 
     async def run(self) -> None:
@@ -84,7 +91,7 @@ class ProgressionRecalcConsumer:
             await message.ack()
             return
 
-        event_type, user_id, request_id = event
+        event_type, user_id, request_id, event_key = event
 
         # ContextVar: a partir de aquí todos los logs del mensaje llevan el request_id, y
         # HttpBetRepository lo reenvía como X-Request-Id a bets-service. Así un recálculo
@@ -96,6 +103,15 @@ class ProgressionRecalcConsumer:
                 "Evento '%s' ignorado: no obliga a recalcular.",
                 event_type,
                 extra={"event_type": event_type, "user_id": user_id},
+            )
+            await message.ack()
+            return
+
+        if await self._processed_events.is_processed(event_key):
+            # Redelivery normal de "al menos una vez", no un error.
+            logger.info(
+                "Evento descartado: ya se había procesado.",
+                extra={"event_type": event_type, "user_id": user_id, "event_key": event_key},
             )
             await message.ack()
             return
@@ -124,19 +140,30 @@ class ProgressionRecalcConsumer:
             await message.nack(requeue=False)
             return
 
+        # Se marca después de recalcular y antes del ack: si falla justo aquí, se
+        # reentrega y se recalcula de más (barato, recalculate es idempotente) en vez de
+        # marcarse "procesado" sin haberse aplicado.
+        await self._processed_events.mark_processed(event_key)
         await message.ack()
         logger.info(
             "Progresión recalculada por evento.",
             extra={"event_type": event_type, "user_id": user_id},
         )
 
-    def _parse(self, message) -> tuple[str, str, str | None] | None:
-        """Extrae ``(event_type, user_id, request_id)``; ``None`` si el mensaje es basura."""
+    def _parse(self, message) -> tuple[str, str, str | None, str] | None:
+        """Extrae ``(event_type, user_id, request_id, event_key)``; ``None`` si es basura.
+
+        ``event_key`` combina ``event_type``+``bet_id``+``occurred_at``: un redelivery trae
+        los mismos bytes, así que identifica la entrega de origen sin ampliar el contrato
+        de ``BetEvent`` (que no tiene id propio).
+        """
 
         try:
             payload = json.loads(message.body)
             event_type = payload["event_type"]
             user_id = payload["user_id"]
+            bet_id = payload["bet_id"]
+            occurred_at = payload["occurred_at"]
             request_id = payload.get("request_id")
         except (ValueError, TypeError, KeyError, AttributeError):
             logger.warning(
@@ -152,7 +179,20 @@ class ProgressionRecalcConsumer:
             )
             return None
 
-        return event_type, user_id, request_id if isinstance(request_id, str) else None
+        if not isinstance(bet_id, str) or not bet_id or not isinstance(occurred_at, str):
+            logger.warning(
+                "Mensaje descartado: 'bet_id' u 'occurred_at' ausentes o inválidos.",
+                extra={"event_type": event_type, "user_id": user_id},
+            )
+            return None
+
+        event_key = f"{event_type}:{bet_id}:{occurred_at}"
+        return (
+            event_type,
+            user_id,
+            request_id if isinstance(request_id, str) else None,
+            event_key,
+        )
 
     def _report(
         self,
