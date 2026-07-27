@@ -4,12 +4,7 @@ from abc import ABC, abstractmethod
 
 
 class ProcessedEventRepository(ABC):
-    """Contrato de persistencia para las claves de eventos ya aplicados.
-
-    ``ProgressionRecalcConsumer`` la consulta antes de recalcular: evita repetir el
-    trabajo (llamada HTTP a bets-service + upsert en Mongo) cuando RabbitMQ reentrega el
-    mismo evento de ``bets.events`` (entrega "al menos una vez").
-    """
+    """Contrato de persistencia para las claves de eventos ya aplicados."""
 
     @abstractmethod
     async def is_processed(self, event_key: str) -> bool:

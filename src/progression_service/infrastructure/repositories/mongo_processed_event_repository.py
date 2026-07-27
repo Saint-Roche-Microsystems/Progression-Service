@@ -10,13 +10,7 @@ from progression_service.domain.repositories.processed_event_repository import (
 
 
 class MongoProcessedEventRepository(ProcessedEventRepository):
-    """Persiste las claves en ``processed_bet_events``, usando ``event_key`` como ``_id``.
-
-    La deduplicación no la hace este código: la garantiza el índice único que Mongo ya
-    mantiene sobre ``_id`` (dos inserciones con la misma clave nunca pueden convivir),
-    igual que ``user_id`` es único en ``user_progression``
-    (ver ``infrastructure/database/mongo.py:ensure_indexes``).
-    """
+    """Persiste las claves en ``processed_bet_events``, con ``event_key`` como ``_id``."""
 
     def __init__(self, db: AsyncDatabase) -> None:
         self._collection = db["processed_bet_events"]
